@@ -1,737 +1,146 @@
 import os
-import io
-import sqlite3
-import tempfile
-from datetime import datetime
-
-from PIL import Image
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "Ahm0710")
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN is missing. Add BOT_TOKEN in Render Environment Variables.")
-
-DB_FILE = "bot.db"
-
-
-# ============================================================
-# DATABASE
-# ============================================================
-
-def db():
-    return sqlite3.connect(DB_FILE)
-
-
-def init_db():
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            balance REAL DEFAULT 0,
-            created_at TEXT
-        )
-    """)
-
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            job_type TEXT,
-            status TEXT,
-            created_at TEXT
-        )
-    """)
-
-    conn.commit()
-    conn.close()
-
-
-def add_user(user_id):
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        "INSERT OR IGNORE INTO users (user_id, balance, created_at) VALUES (?, ?, ?)",
-        (user_id, 0, datetime.now().isoformat())
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def get_balance(user_id):
-    add_user(user_id)
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT balance FROM users WHERE user_id = ?",
-        (user_id,)
-    )
-
-    result = cur.fetchone()
-    conn.close()
-
-    return result[0] if result else 0
-
-
-def add_job(user_id, job_type, status="Completed"):
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        INSERT INTO jobs (user_id, job_type, status, created_at)
-        VALUES (?, ?, ?, ?)
-    """, (
-        user_id,
-        job_type,
-        status,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def get_jobs(user_id):
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT job_type, status, created_at
-        FROM jobs
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT 10
-    """, (user_id,))
-
-    results = cur.fetchall()
-    conn.close()
-
-    return results
-
-
-# ============================================================
-# KEYBOARD
-# ============================================================
-
-def main_keyboard():
-
-    keyboard = [
-        [
-            InlineKeyboardButton("📄 PDF → Image", callback_data="pdf_to_image"),
-            InlineKeyboardButton("🖼 Image → PDF", callback_data="image_to_pdf"),
-        ],
-        [
-            InlineKeyboardButton("📸 Screenshot → PDF", callback_data="screenshot_pdf"),
-            InlineKeyboardButton("📚 Multiple Images → PDF", callback_data="multi_pdf"),
-        ],
-        [
-            InlineKeyboardButton("💰 Balance", callback_data="balance"),
-            InlineKeyboardButton("💳 Top Up", callback_data="topup"),
-        ],
-        [
-            InlineKeyboardButton("🗂 My Jobs", callback_data="jobs"),
-            InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
-        ],
-        [
-            InlineKeyboardButton("🆘 Support", callback_data="support"),
-        ],
-    ]
-
-    return InlineKeyboardMarkup(keyboard)
-
-
-# ============================================================
-# START
-# ============================================================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user = update.effective_user
-    add_user(user.id)
-
-    text = (
-        f"👋 ሰላም {user.first_name}!\n\n"
-        "🤖 ወደ File Converter Bot እንኳን በደህና መጣህ።\n\n"
-        "ከታች ያሉትን አማራጮች ተጠቀም፦"
-    )
-
-    await update.message.reply_text(
-        text,
-        reply_markup=main_keyboard()
-    )
-
-
-# ============================================================
-# PDF → IMAGE
-# ============================================================
-
-async def pdf_to_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    context.user_data["waiting_for"] = "pdf_to_image"
-
-    await query.message.reply_text(
-        "📄 PDF ፋይልህን አሁን ላክ።\n\n"
-        "ከዚያ ወደ Image እቀይረዋለሁ።"
-    )
-
-
-# ============================================================
-# IMAGE → PDF
-# ============================================================
-
-async def image_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    context.user_data["waiting_for"] = "image_to_pdf"
-
-    await query.message.reply_text(
-        "🖼️ JPG / JPEG / PNG ምስል ላክ።\n\n"
-        "ወደ PDF እቀይረዋለሁ።"
-    )
-
-
-# ============================================================
-# SCREENSHOT → PDF
-# ============================================================
-
-async def screenshot_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    context.user_data["waiting_for"] = "screenshot_pdf"
-
-    await query.message.reply_text(
-        "📸 Screenshot ላክ።\n\n"
-        "ወደ PDF እቀይረዋለሁ።"
-    )
-
-
-# ============================================================
-# MULTIPLE IMAGES → PDF
-# ============================================================
-
-async def multi_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    context.user_data["waiting_for"] = "multi_pdf"
-    context.user_data["multi_images"] = []
-
-    await query.message.reply_text(
-        "📚 Multiple Images → PDF\n\n"
-        "ምስሎችን አንድ በአንድ ላክ።\n"
-        "ሲጨርስ /done ብለህ ላክ።"
-    )
-
-
-# ============================================================
-# BALANCE
-# ============================================================
-
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    amount = get_balance(query.from_user.id)
-
-    keyboard = [
-        [InlineKeyboardButton("💳 Top Up", callback_data="topup")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ]
-
-    await query.message.reply_text(
-        f"💰 Your Balance\n\n"
-        f"Balance: {amount:.2f} ETB",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================================
-# TOP UP
-# ============================================================
-
-async def topup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    text = (
-        "💳 TOP UP\n\n"
-        "በTelebirr ለመክፈል፦\n\n"
-        "📱 Telebirr: 0920210606\n\n"
-        "ክፍያውን ካደረግህ በኋላ "
-        "የክፍያ ማረጋገጫውን ለAdmin/Support ላክ።\n\n"
-        f"🆘 Support: @{SUPPORT_USERNAME}"
-    )
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "🆘 Contact Support",
-                url=f"https://t.me/{SUPPORT_USERNAME}"
-            )
-        ],
-        [
-            InlineKeyboardButton("🔙 Back", callback_data="back")
-        ]
-    ]
-
-    await query.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================================
-# MY JOBS
-# ============================================================
-
-async def jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    user_jobs = get_jobs(query.from_user.id)
-
-    if not user_jobs:
-        text = (
-            "🗂 My Jobs\n\n"
-            "እስካሁን ምንም job የለህም።"
-        )
-
-    else:
-        text = "🗂 My Jobs\n\n"
-
-        for job_type, status, created_at in user_jobs:
-            text += (
-                f"• {job_type}\n"
-                f"  Status: {status}\n"
-                f"  {created_at}\n\n"
-            )
-
-    keyboard = [
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ]
-
-    await query.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================================
-# SETTINGS
-# ============================================================
-
-async def settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [
-        [InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")],
-        [InlineKeyboardButton("🇪🇹 አማርኛ", callback_data="lang_am")],
-        [InlineKeyboardButton("🔙 Back", callback_data="back")]
-    ]
-
-    await query.message.reply_text(
-        "⚙️ Settings\n\n"
-        "የቋንቋ ምርጫህን ከታች ምረጥ።",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================================
-# SUPPORT
-# ============================================================
-
-async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "🆘 Contact Support",
-                url=f"https://t.me/{SUPPORT_USERNAME}"
-            )
-        ],
-        [
-            InlineKeyboardButton("🔙 Back", callback_data="back")
-        ]
-    ]
-
-    await query.message.reply_text(
-        "🆘 Support\n\n"
-        "ችግር ካጋጠመህ Support ን አግኝ።",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================================
-# BACK
-# ============================================================
-
-async def back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    await query.answer()
-
-    await query.message.reply_text(
-        "🏠 Main Menu",
-        reply_markup=main_keyboard()
-    )
-
-
-# ============================================================
-# IMAGE PROCESSING
-# ============================================================
-
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    user_id = update.effective_user.id
-    waiting = context.user_data.get("waiting_for")
-
-    if not waiting:
-        await update.message.reply_text(
-            "📌 መጀመሪያ ከMenu አንድ አማራጭ ምረጥ።",
-            reply_markup=main_keyboard()
-        )
-        return
-
-    photo = update.message.photo[-1]
-    file = await context.bot.get_file(photo.file_id)
-
-    image_bytes = io.BytesIO()
-    await file.download_to_memory(image_bytes)
-    image_bytes.seek(0)
-
-    if waiting == "multi_pdf":
-
-        context.user_data.setdefault("multi_images", [])
-        context.user_data["multi_images"].append(image_bytes.getvalue())
-
-        count = len(context.user_data["multi_images"])
-
-        await update.message.reply_text(
-            f"✅ Image {count} ተቀብሏል።\n\n"
-            "ተጨማሪ image ካለ ላክ።\n"
-            "ሲጨርስ /done ብለህ ላክ።"
-        )
-        return
-
-    if waiting in ("image_to_pdf", "screenshot_pdf"):
-
-        image = Image.open(image_bytes).convert("RGB")
-
-        output = io.BytesIO()
-        image.save(output, format="PDF")
-        output.seek(0)
-
-        await update.message.reply_document(
-            document=output,
-            filename="converted.pdf",
-            caption="✅ PDF ተዘጋጅቷል።"
-        )
-
-        add_job(
-            user_id,
-            "Image → PDF" if waiting == "image_to_pdf"
-            else "Screenshot → PDF"
-        )
-
-        context.user_data["waiting_for"] = None
-        return
-
-
-# ============================================================
-# MULTIPLE IMAGES DONE
-# ============================================================
-
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if context.user_data.get("waiting_for") != "multi_pdf":
-        await update.message.reply_text(
-            "📌 Multiple Images → PDF mode ላይ አይደለህም።"
-        )
-        return
-
-    images = context.user_data.get("multi_images", [])
-
-    if not images:
-        await update.message.reply_text(
-            "❌ እስካሁን image አልላክህም።"
-        )
-        return
-
-    pil_images = []
-
-    for data in images:
-        img = Image.open(io.BytesIO(data)).convert("RGB")
-        pil_images.append(img)
-
-    output = io.BytesIO()
-
-    first = pil_images[0]
-    others = pil_images[1:]
-
-    first.save(
-        output,
-        format="PDF",
-        save_all=True,
-        append_images=others
-    )
-
-    output.seek(0)
-
-    await update.message.reply_document(
-        document=output,
-        filename="multiple_images.pdf",
-        caption=f"✅ {len(images)} images → PDF ተጠናቋል።"
-    )
-
-    add_job(
-        update.effective_user.id,
-        f"Multiple Images → PDF ({len(images)} images)"
-    )
-
-    context.user_data["waiting_for"] = None
-    context.user_data["multi_images"] = []
-
-
-# ============================================================
-# PDF HANDLER
-# ============================================================
-
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    waiting = context.user_data.get("waiting_for")
-
-    if waiting != "pdf_to_image":
-        await update.message.reply_text(
-            "📌 መጀመሪያ ከMenu ተገቢውን አማራጭ ምረጥ።"
-        )
-        return
-
-    document = update.message.document
-
-    if not document.file_name.lower().endswith(".pdf"):
-        await update.message.reply_text(
-            "❌ PDF ፋይል ብቻ ላክ።"
-        )
-        return
-
-    file = await context.bot.get_file(document.file_id)
-
-    with tempfile.NamedTemporaryFile(
-        suffix=".pdf",
-        delete=False
-    ) as temp:
-
-        temp_path = temp.name
-
-    await file.download_to_drive(temp_path)
-
-    # PDF conversion needs PyMuPDF
+from PIL import Image, ImageDraw, ImageFont
+import qrcode
+
+def create_fayda_id(name_am, name_en, dob, sex, expiry, fin, phone, address, photo_path=None, font_path="nyala.ttf"):
+    # Standard CR80 ID Card dimensions in pixels (approx. 1012 x 638 for high quality)
+    card_width = 1012
+    card_height = 638
+    
+    # 1. Create Front Card Canvas (with a beautiful light gradient background)
+    front_card = Image.new("RGB", (card_width, card_height), "#ffffff")
+    draw = ImageDraw.Draw(front_card)
+    
+    # Draw background pattern (Light green and yellow gradient emulation)
+    for y in range(card_height):
+        # Simple color blend from light green to light yellow
+        r = int(230 + (y / card_height) * 25)
+        g = int(247 - (y / card_height) * 10)
+        b = int(240 - (y / card_height) * 40)
+        for x in range(card_width):
+            front_card.putpixel((x, y), (r, g, b))
+            
+    # Load Font (Fallback to default if custom font not found)
     try:
-        import fitz
+        font_title = ImageFont.truetype(font_path, 24)
+        font_text = ImageFont.truetype(font_path, 22)
+        font_bold = ImageFont.truetype(font_path, 26)
+        font_small = ImageFont.truetype(font_path, 16)
+    except IOError:
+        print(f"ማስጠንቀቂያ: '{font_path}' ፎንት አልተገኘም። የአማርኛ ፊደላት በትክክል እንዲታዩ እባክዎ ፎንቱን በፎልደሩ ውስጥ ያድርጉት።")
+        font_title = font_text = font_bold = font_small = ImageFont.load_default()
 
-        pdf = fitz.open(temp_path)
+    # Draw Ethiopian Flag (Top Right)
+    flag_w, flag_h = 90, 60
+    flag_x, flag_y = card_width - 120, 20
+    draw.rectangle([flag_x, flag_y, flag_x + flag_w, flag_y + int(flag_h/3)], fill="#009a44") # Green
+    draw.rectangle([flag_x, flag_y + int(flag_h/3), flag_x + flag_w, flag_y + int(2*flag_h/3)], fill="#fec10d") # Yellow
+    draw.rectangle([flag_x, flag_y + int(2*flag_h/3), flag_x + flag_w, flag_y + flag_h], fill="#d11919") # Red
 
-        page_count = len(pdf)
+    # Header Text
+    draw.text((30, 20), "የኢትዮጵያ ብሔራዊ መታወቂያ", fill="#0f172a", font=font_title)
+    draw.text((30, 50), "Ethiopian National ID", fill="#475569", font=font_small)
+    draw.text((450, 20), "የኢትዮጵያ ዲጂታል መታወቂያ", fill="#1e3a8a", font=font_bold)
+    draw.text((450, 50), "Ethiopian Digital ID Card", fill="#1e40af", font=font_text)
+    
+    # Draw a thin blue separator line
+    draw.line([(30, 90), (card_width - 30, 90)], fill="#3b82f6", width=2)
 
-        # Limit very large PDFs
-        if page_count > 20:
-            await update.message.reply_text(
-                "⚠️ PDF ከ20 pages በላይ ነው። "
-                "እባክህ ትንሽ PDF ላክ።"
-            )
-
-            os.remove(temp_path)
-            return
-
-        for index, page in enumerate(pdf):
-
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
-
-            image_bytes = pix.tobytes("png")
-
-            await update.message.reply_document(
-                document=io.BytesIO(image_bytes),
-                filename=f"page_{index + 1}.png",
-                caption=f"📄 Page {index + 1}/{page_count}"
-            )
-
-        pdf.close()
-
-        add_job(
-            update.effective_user.id,
-            f"PDF → Image ({page_count} pages)"
-        )
-
-        context.user_data["waiting_for"] = None
-
-    except Exception as e:
-
-        await update.message.reply_text(
-            "❌ PDF conversion failed.\n"
-            f"Error: {str(e)}"
-        )
-
-    finally:
-
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-# ============================================================
-# CALLBACK ROUTER
-# ============================================================
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    query = update.callback_query
-    data = query.data
-
-    if data == "pdf_to_image":
-        await pdf_to_image(update, context)
-
-    elif data == "image_to_pdf":
-        await image_to_pdf(update, context)
-
-    elif data == "screenshot_pdf":
-        await screenshot_pdf(update, context)
-
-    elif data == "multi_pdf":
-        await multi_pdf(update, context)
-
-    elif data == "balance":
-        await balance(update, context)
-
-    elif data == "topup":
-        await topup(update, context)
-
-    elif data == "jobs":
-        await jobs(update, context)
-
-    elif data == "settings":
-        await settings(update, context)
-
-    elif data == "support":
-        await support(update, context)
-
-    elif data == "back":
-        await back(update, context)
-
-    elif data == "lang_en":
-        await query.answer("English selected")
-
-        await query.message.reply_text(
-            "🇬🇧 English selected.",
-            reply_markup=main_keyboard()
-        )
-
-    elif data == "lang_am":
-        await query.answer("አማርኛ selected")
-
-        await query.message.reply_text(
-            "🇪🇹 አማርኛ ተመርጧል።",
-            reply_markup=main_keyboard()
-        )
-
+    # Insert User Photo (Right side)
+    if photo_path and os.path.exists(photo_path):
+        user_photo = Image.open(photo_path)
+        user_photo = user_photo.resize((190, 240)) # Standard ID photo ratio
+        front_card.paste(user_photo, (card_width - 220, 120))
     else:
-        await query.answer("Unknown option")
+        # Placeholder if no photo
+        draw.rectangle([card_width - 220, 120, card_width - 30, 360], outline="#94a3b8", width=2)
+        draw.text((card_width - 180, 220), "ፎቶ (Photo)", fill="#94a3b8", font=font_text)
 
+    # Write ID Details (Middle)
+    start_x = 240
+    start_y = 120
+    spacing = 55
 
-# ============================================================
-# ERROR HANDLER
-# ============================================================
+    details = [
+        ("ሙሉ ስም / Full Name:", f"{name_am}\n{name_en}"),
+        ("የልደት ቀን / DOB:", dob),
+        ("ጾታ / Sex:", sex),
+        ("የሚያበቃበት ቀን / Expiry:", expiry)
+    ]
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    curr_y = start_y
+    for label, val in details:
+        draw.text((start_x, curr_y), label, fill="#64748b", font=font_small)
+        draw.text((start_x + 180, curr_y), val, fill="#0f172a", font=font_bold if "ስም" in label else font_text)
+        curr_y += spacing
 
-    print("ERROR:", context.error)
+    # Draw Small Photo (Left Side)
+    if photo_path and os.path.exists(photo_path):
+        small_photo = Image.open(photo_path).resize((90, 110))
+        front_card.paste(small_photo, (50, 120))
+    else:
+        draw.rectangle([50, 120, 140, 230], outline="#cbd5e1", width=1)
 
+    draw.text((55, 245), "Fayda ID", fill="#475569", font=font_small)
 
-# ============================================================
-# MAIN
-# ============================================================
+    # Footer Area: FIN Number
+    draw.line([(30, 520), (card_width - 30, 520)], fill="#cbd5e1", width=1)
+    draw.text((30, 535), "Fayda Identification Number (FIN)", fill="#64748b", font=font_small)
+    draw.text((30, 560), fin, fill="#1e3a8a", font=font_bold)
 
-def main():
+    # Save Front Card
+    front_card.save("fayda_front.png")
+    print("የመታወቂያው የፊት ገጽ 'fayda_front.png' በሚል ስም ተቀምጧል!")
 
-    init_db()
+    # -------------------------------------------------------------
+    # 2. Create Back Card Canvas
+    back_card = Image.new("RGB", (card_width, card_height), "#f8fafc")
+    draw_back = ImageDraw.Draw(back_card)
 
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    # Generate QR Code for verification link
+    qr_data = f"https://fayda.gov.et/verify/{fin}"
+    qr = qrcode.QRCode(version=1, box_size=8, border=1)
+    qr.add_data(qr_data)
+    qr.make(fit=True)
+    qr_img = qr.make_image(fill_color="#1e293b", back_color="#ffffff").resize((280, 280))
+    back_card.paste(qr_img, (50, 150))
 
-    application.add_handler(
-        CommandHandler("start", start)
-    )
+    # Back Card Details
+    draw_back.text((400, 50), "የመታወቂያው የጀርባ ገጽ / Card Back", fill="#94a3b8", font=font_small)
+    
+    back_details = [
+        ("ስልክ ቁጥር / Phone Number:", phone),
+        ("ዜግነት / Nationality:", "ኢትዮጵያዊ / Ethiopian"),
+        ("አድራሻ / Address:", address)
+    ]
 
-    application.add_handler(
-        CommandHandler("done", done)
-    )
+    curr_y = 150
+    for label, val in back_details:
+        draw_back.text((400, curr_y), label, fill="#64748b", font=font_small)
+        draw_back.text((400, curr_y + 25), val, fill="#0f172a", font=font_bold)
+        curr_y += 80
 
-    application.add_handler(
-        CallbackQueryHandler(button_handler)
-    )
+    # Back Card Footer
+    draw_back.line([(30, 520), (card_width - 30, 520)], fill="#cbd5e1", width=1)
+    draw_back.text((30, 550), "SN: 93143882", fill="#475569", font=font_text)
+    draw_back.text((card_width - 250, 550), "National ID Ethiopia", fill="#1e3a8a", font=font_bold)
 
-    application.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            handle_photo
-        )
-    )
+    # Save Back Card
+    back_card.save("fayda_back.png")
+    print("የመታወቂያው የጀርባ ገጽ 'fayda_back.png' በሚል ስም ተቀምጧል!")
 
-    application.add_handler(
-        MessageHandler(
-            filters.Document.ALL,
-            handle_document
-        )
-    )
-
-    application.add_error_handler(error_handler)
-
-    print("🤖 Bot is starting...")
-
-    application.run_polling(
-        allowed_updates=Update.ALL_TYPES
-    )
-
-
+# --- ኮዱን ለመሞከር (Example Run) ---
 if __name__ == "__main__":
-    main()
+    # እዚህ ጋር መረጃዎችን መለወጥ ይችላሉ
+    create_fayda_id(
+        name_am="አሚናት ሰይድ ኢብራሂም",
+        name_en="Aminat Seid Ebrahim",
+        dob="05/12/1979 | 12/Sep/1952",
+        sex="ሴት / Female",
+        expiry="20/12/1402 | 30/Dec/2029",
+        fin="30410835812882",
+        phone="0911223344",
+        address="Amhara / South Wollo Zone / Tehuledere",
+        photo_path=None, # የፎቶ ፋይል ካለዎት እዚህ ጋር ስሙን ያስገቡ (ለምሳሌ "my_photo.jpg")
+        font_path="nyala.ttf" # የአማርኛ ፎንት ፋይል ስም
+    )
