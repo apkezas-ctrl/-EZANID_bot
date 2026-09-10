@@ -1,4 +1,0 @@
-python-telegram-bot>=20.0
-Pillow>=9.0.0
-qrcode>=7.0
-
