@@ -1,3 +1,0 @@
-python-telegram-bot==22.5
-Pillow==11.3.0
-PyMuPDF==1.26.4
